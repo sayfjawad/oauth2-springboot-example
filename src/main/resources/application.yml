@@ -1,0 +1,11 @@
+spring:
+  jmx:
+    enabled: false
+  application:
+    admin:
+      enabled: false
+
+oauth:
+  env: ${OAUTH2_ENV:environment-placeholder}
+  client-id: ${OAUTH2_CLIENT_ID:client-id-placeholder}
+  private-key: ${OAUTH2_PRIVATE_KEY:private-key-placeholder}
