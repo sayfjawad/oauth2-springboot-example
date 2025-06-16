@@ -1,5 +1,6 @@
 package nl.multicode.auth.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -7,21 +8,25 @@ import com.nimbusds.jose.JWSSigner;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import jakarta.annotation.PostConstruct;
-import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.hc.client5.http.fluent.Form;
-import org.apache.hc.client5.http.fluent.Request;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
+
+import java.io.StringReader;
+import java.security.KeyFactory;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
 
 @Slf4j
 @Service
@@ -34,15 +39,17 @@ public class TokenService {
       "a", "acc.idp.cmf.energysector.nl",
       "p", "idp.cmf.energysector.nl"
   );
-
+  private final WebClient webClient;
   @Value("${oauth.env}")
   private String env;
-
   @Value("${oauth.client-id}")
   private String clientId;
-
   @Value("${oauth.private-key}")
   private String privateKeyPem;
+
+  public TokenService(WebClient webClient) {
+    this.webClient = webClient;
+  }
 
   public String getAccessToken() throws Exception {
 
@@ -50,28 +57,32 @@ public class TokenService {
     log.info("Client ID: {}", clientId);
     log.info("Private key-length: {}", privateKeyPem.length());
 
-    String host = HOSTS.get(env);
-    String tokenUrl = "https://" + host + "/am/oauth2/access_token";
+    final var host = HOSTS.get(env);
+    final var tokenUrl = "https://" + host + "/am/oauth2/access_token";
 
     // Step 1: Sign JWT
-    String jwt = generateClientAssertion(tokenUrl);
+    final var jwt = generateClientAssertion(tokenUrl);
 
     // Step 2: Send POST request
-    return Request.post(tokenUrl)
-        .bodyForm(
-            Form.form()
-                .add("grant_type", "client_credentials")
-                .add("client_id", clientId)
-                .add("client_assertion_type",
-                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
-                .add("scope", "roles")
-                .add("client_assertion", jwt)
-                .build(),
-            StandardCharsets.UTF_8
-        )
-        .execute()
-        .returnContent()
-        .asString(); // Optionally parse the token JSON if needed
+
+    final var responseBody = webClient.post()
+        .uri(tokenUrl)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .bodyValue("grant_type=client_credentials" +
+            "&client_id=" + clientId +
+            "&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" +
+            "&scope=roles" +
+            "&client_assertion=" + jwt)
+        .retrieve()
+        .bodyToMono(String.class)
+        .block(); // Optional: Use `.block()` only in non-reactive flows
+
+    log.warn("Response length: {}", responseBody.length());
+    log.warn("Response string: {}", responseBody);
+
+    final var mapper = new ObjectMapper();
+    final var jsonNode = mapper.readTree(responseBody);
+    return jsonNode.get("access_token").asText();
   }
 
   private String generateClientAssertion(String audience) throws Exception {
@@ -99,16 +110,17 @@ public class TokenService {
     return signedJWT.serialize();
   }
 
-  private RSAPrivateKey loadPrivateKey(String pem) throws Exception {
-    String privateKeyContent = pem
-        .replaceAll("\\n", "")
-        .replace("-----BEGIN PRIVATE KEY-----", "")
-        .replace("-----END PRIVATE KEY-----", "")
-        .trim();
+  @SneakyThrows
+  private RSAPrivateKey loadPrivateKey(String pem) {
+    try (PemReader pemReader = new PemReader(new StringReader(pem))) {
+      PemObject pemObject = pemReader.readPemObject();
+      byte[] content = pemObject.getContent();
 
-    byte[] decoded = Base64.getDecoder().decode(privateKeyContent);
-    PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(decoded);
-    KeyFactory kf = KeyFactory.getInstance("RSA");
-    return (RSAPrivateKey) kf.generatePrivate(spec);
+      PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(content);
+      KeyFactory kf = KeyFactory.getInstance("RSA");
+      return (RSAPrivateKey) kf.generatePrivate(keySpec);
+    }
   }
+
+
 }

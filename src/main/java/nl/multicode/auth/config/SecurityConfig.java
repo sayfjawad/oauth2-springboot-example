@@ -14,7 +14,7 @@ public class SecurityConfig {
   public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
     http
         .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/token").permitAll()  // allow /token
+            .requestMatchers("/token", "/test-token").permitAll()  // allow /token
             .anyRequest().authenticated()          // protect others
         );
     return http.build();
